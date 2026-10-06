@@ -1,0 +1,10 @@
+{
+  "name": "diu-class-materials-bot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": "20.x" },
+  "dependencies": {
+    "google-auth-library": "^9.14.0"
+  }
+}

@@ -1,0 +1,466 @@
+import { sendMessage, editMessage, answerCb, sendFile, copyMessage, esc } from '../lib/telegram.js';
+import { getFiles, addFile, getPending, setPending, clearPending } from '../lib/sheets.js';
+import {
+  ADMIN_IDS,
+  CHANNEL_ID,
+  isAdmin,
+  parseCaption,
+  normDept,
+  normSemester,
+  normCourse,
+  normTitle,
+  semSort,
+  categoryOf,
+  extractFile,
+  baseName,
+  CAT_ICON,
+  CAT_ORDER,
+  chunk,
+  unique,
+} from '../lib/util.js';
+
+/* ================= texts ================= */
+
+const HOW_TO = `<b>How to use it</b>
+1️⃣ Choose your department
+2️⃣ Choose the semester (e.g. Summer 2026)
+3️⃣ Choose your course (e.g. CSE 113)
+4️⃣ Tap a file to receive it, or tap “Send all”`;
+
+const WELCOME = `👋 <b>Welcome to DIU Class Materials!</b>
+
+📚 This bot keeps lecture slides, PDFs and other class materials in one place, organised by department, semester and course code.
+
+${HOW_TO}
+
+<b>Commands</b>
+/start – open the menu
+/help – how to use the bot
+/about – about the bot`;
+
+const ABOUT = `ℹ️ <b>About DIU Class Materials</b>
+
+A free bot made for students to find lecture slides, PDFs and other course files quickly, without searching through chats and groups.
+
+Materials are added by admins. If your course is missing, check back soon.`;
+
+const ADMIN_HELP = `🛠 <b>Admin: adding materials</b>
+Send the file to this bot (or post it in the storage channel) with this caption:
+<code>CSE | Summer 2026 | CSE 113 | Lecture 1</code>
+
+No caption, or a wrong one? The bot asks you with buttons.
+Duplicates (same semester, course and title) are skipped.
+/cancel – cancel an unfinished upload`;
+
+/* ================= entry point ================= */
+
+export default async function handler(req, res) {
+  if (req.method !== 'POST') return res.status(200).send('DIU Class Materials bot is running ✅');
+
+  const secret = process.env.WEBHOOK_SECRET;
+  if (secret && req.headers['x-telegram-bot-api-secret-token'] !== secret) {
+    return res.status(401).send('unauthorized');
+  }
+
+  try {
+    const u = req.body || {};
+    if (u.message) await onMessage(u.message);
+    else if (u.channel_post) await onChannelPost(u.channel_post);
+    else if (u.callback_query) await onCallback(u.callback_query);
+  } catch (e) {
+    console.error(e); // always answer 200 so Telegram doesn't retry forever
+  }
+  res.status(200).send('ok');
+}
+
+/* ================= small UI helpers ================= */
+
+const btn = (text, data) => ({ text, callback_data: data });
+const kb = (rows) => ({ reply_markup: { inline_keyboard: rows } });
+const short = (s, n = 45) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function render(chatId, msgId, text, keyboard) {
+  const extra = kb(keyboard);
+  return msgId ? editMessage(chatId, msgId, text, extra) : sendMessage(chatId, text, extra);
+}
+
+/* ================= messages & commands ================= */
+
+async function onMessage(msg) {
+  const chatId = msg.chat.id;
+  const from = msg.from?.id;
+  const text = (msg.text || '').trim();
+
+  if (text.startsWith('/')) return onCommand(msg, text);
+
+  const file = extractFile(msg);
+  if (file) {
+    if (!isAdmin(from)) return sendMessage(chatId, '🔒 Only admins can upload materials.');
+    return handleUpload({
+      file,
+      caption: msg.caption || '',
+      adminId: from,
+      chatId,
+      source: { chat_id: chatId, message_id: msg.message_id },
+    });
+  }
+
+  if (text && isAdmin(from)) {
+    const p = await getPending(from);
+    if (p?.awaiting) return onPendingText(from, chatId, p, text);
+  }
+  if (text) return sendMessage(chatId, 'Use /start to browse class materials 📚');
+}
+
+async function onCommand(msg, text) {
+  const chatId = msg.chat.id;
+  const from = msg.from?.id;
+  const cmd = text.split(/[\s@]/)[0].toLowerCase();
+
+  switch (cmd) {
+    case '/start':
+      return showHome(chatId, null, true);
+    case '/help':
+      return sendMessage(chatId, HOW_TO + (isAdmin(from) ? `\n\n${ADMIN_HELP}` : ''));
+    case '/about':
+      return sendMessage(chatId, ABOUT);
+    case '/id':
+      return sendMessage(chatId, `Your Telegram ID: <code>${from}</code>`);
+    case '/cancel':
+      if (!isAdmin(from)) return;
+      await clearPending(from);
+      return sendMessage(chatId, '✖️ Upload cancelled.');
+    default:
+      return sendMessage(chatId, 'Unknown command. Try /start');
+  }
+}
+
+/* ================= student menu ================= */
+
+const courseFiles = (rows, dept, sem, course) =>
+  rows.filter((r) => r.dept === dept && r.semester === sem && r.course === course);
+
+async function showHome(chatId, msgId, welcome = false) {
+  const rows = await getFiles();
+  const depts = unique(rows.map((r) => r.dept)).sort();
+  const head = welcome ? `${WELCOME}\n\n` : '';
+  if (!depts.length) {
+    return render(chatId, msgId, `${head}📭 No materials have been added yet. Please check back soon!`, []);
+  }
+  const keyboard = chunk(depts.map((d) => btn(`🏫 ${d}`, `S|${d}`)), 2);
+  return render(chatId, msgId, `${head}👇 <b>Select your department</b>`, keyboard);
+}
+
+async function showSemesters(chatId, msgId, dept) {
+  const rows = await getFiles();
+  const sems = unique(rows.filter((r) => r.dept === dept).map((r) => r.semester)).sort(semSort);
+  const keyboard = chunk(sems.map((s) => btn(`📅 ${s}`, `C|${dept}|${s}`)), 2);
+  keyboard.push([btn('⬅️ Back', 'D')]);
+  return render(chatId, msgId, `🏫 <b>${esc(dept)}</b>\n\n👇 <b>Select the semester</b>`, keyboard);
+}
+
+async function showCourses(chatId, msgId, dept, sem) {
+  const rows = await getFiles();
+  const courses = unique(
+    rows.filter((r) => r.dept === dept && r.semester === sem).map((r) => r.course)
+  ).sort();
+  const keyboard = chunk(courses.map((c) => btn(`🎓 ${c}`, `F|${dept}|${sem}|${c}`)), 2);
+  keyboard.push([btn('⬅️ Back', `S|${dept}`)]);
+  return render(
+    chatId,
+    msgId,
+    `🏫 <b>${esc(dept)}</b> · 📅 <b>${esc(sem)}</b>\n\n👇 <b>Select the course</b>`,
+    keyboard
+  );
+}
+
+async function showFiles(chatId, msgId, dept, sem, course) {
+  const rows = await getFiles();
+  const list = courseFiles(rows, dept, sem, course)
+    .map((f, i) => ({ ...f, i })) // i = position in sheet order (used by the buttons)
+    .sort((a, b) => CAT_ORDER.indexOf(a.category) - CAT_ORDER.indexOf(b.category));
+
+  const keyboard = list
+    .slice(0, 90)
+    .map((f) => [btn(`${CAT_ICON[f.category] || '📁'} ${short(f.title)}`, `G|${dept}|${sem}|${course}|${f.i}`)]);
+  if (list.length > 1) keyboard.push([btn('📥 Send all', `A|${dept}|${sem}|${course}`)]);
+  keyboard.push([btn('⬅️ Back', `C|${dept}|${sem}`)]);
+
+  return render(
+    chatId,
+    msgId,
+    `🎓 <b>${esc(course)}</b> · ${esc(sem)}\n${list.length} file(s)\n\n👇 Tap a file to receive it:`,
+    keyboard
+  );
+}
+
+const fileCaption = (f) => `🎓 ${esc(f.course)} · ${esc(f.title)}`;
+
+/* ================= callbacks ================= */
+
+async function onCallback(cq) {
+  const chatId = cq.message?.chat.id;
+  const msgId = cq.message?.message_id;
+  if (!chatId) return answerCb(cq.id);
+
+  const [a, ...p] = (cq.data || '').split('|');
+  if (a === 'u') return onUploadCb(cq, p);
+
+  switch (a) {
+    case 'D':
+      await answerCb(cq.id);
+      return showHome(chatId, msgId);
+    case 'S':
+      await answerCb(cq.id);
+      return showSemesters(chatId, msgId, p[0]);
+    case 'C':
+      await answerCb(cq.id);
+      return showCourses(chatId, msgId, p[0], p[1]);
+    case 'F':
+      await answerCb(cq.id);
+      return showFiles(chatId, msgId, p[0], p[1], p[2]);
+    case 'G': {
+      const [dept, sem, course, i] = p;
+      const f = courseFiles(await getFiles(), dept, sem, course)[Number(i)];
+      if (!f) return answerCb(cq.id, 'File not found. Please reopen the menu.', true);
+      await answerCb(cq.id);
+      return sendFile(chatId, f.kind, f.file_id, fileCaption(f));
+    }
+    case 'A': {
+      const [dept, sem, course] = p;
+      const list = courseFiles(await getFiles(), dept, sem, course);
+      await answerCb(cq.id, `Sending ${list.length} file(s)…`);
+      for (const f of list) {
+        await sendFile(chatId, f.kind, f.file_id, fileCaption(f));
+        await sleep(400); // stay under Telegram's rate limit
+      }
+      return;
+    }
+    default:
+      return answerCb(cq.id);
+  }
+}
+
+/* ================= uploading (admin) ================= */
+
+const DEFAULT_DEPTS = ['CSE', 'SWE', 'EEE', 'CIS']; // edit freely; shown only in the admin upload menu
+const defaultSemesters = () => {
+  const y = new Date().getFullYear();
+  return [`Spring ${y}`, `Summer ${y}`, `Fall ${y}`];
+};
+
+const FIELD = { d: 'dept', s: 'semester', c: 'course' };
+const NORM = { dept: normDept, semester: normSemester, course: normCourse, title: normTitle };
+const LABEL = { dept: 'department', semester: 'semester', course: 'course code', title: 'title' };
+const NEXT = { dept: 'semester', semester: 'course', course: 'title' };
+const clean = (s) => s.replace(/\|/g, '/').slice(0, 60);
+
+// Same dept + semester + course + title (case-insensitive) = duplicate.
+// The semester is included because the same course repeats every semester.
+const dupKey = (r) =>
+  [r.dept, r.semester, r.course, r.title].map((x) => x.toLowerCase().trim()).join('|');
+
+async function saveFile({ dept, semester, course, title, file, source }) {
+  // callback_data is limited to 64 bytes, so names must stay short
+  if (Buffer.byteLength(`G|${dept}|${semester}|${course}|99`) > 64) {
+    return {
+      ok: false,
+      text: '❌ Names are too long for the menu. Use short names, e.g. CSE, Summer 2026, CSE 113.',
+    };
+  }
+
+  const rows = await getFiles(true);
+  const key = dupKey({ dept, semester, course, title });
+  if (rows.some((r) => dupKey(r) === key)) {
+    return {
+      ok: false,
+      text: `⚠️ <b>Skipped</b> – “${esc(title)}” already exists in ${esc(course)} (${esc(semester)}).`,
+    };
+  }
+
+  await addFile({ dept, semester, course, title, category: file.category, file_id: file.file_id, kind: file.kind });
+
+  // Back up files that did not come from the storage channel
+  if (CHANNEL_ID && source && String(source.chat_id) !== CHANNEL_ID) {
+    await copyMessage(CHANNEL_ID, source.chat_id, source.message_id, `${dept} | ${semester} | ${course} | ${title}`);
+  }
+
+  return {
+    ok: true,
+    text: `✅ <b>Saved!</b>\n\n🏫 ${esc(dept)}\n📅 ${esc(semester)}\n🎓 ${esc(course)}\n${CAT_ICON[file.category] || '📁'} ${esc(title)}`,
+  };
+}
+
+async function handleUpload({ file, caption, adminId, chatId, source, fromChannel = false }) {
+  file.category = categoryOf(file.name, file.kind);
+
+  const parsed = parseCaption(caption);
+  if (parsed) {
+    const r = await saveFile({ ...parsed, file, source });
+    return sendMessage(chatId, (fromChannel ? '📥 <i>From the channel</i>\n' : '') + r.text);
+  }
+
+  // Caption missing or wrong -> ask with buttons
+  const p = {
+    file,
+    source,
+    step: 'dept',
+    awaiting: null,
+    titleDefault: caption && !caption.includes('|') ? normTitle(caption) : baseName(file.name),
+  };
+  const ok = await promptStep(adminId, chatId, p);
+  if (!ok && fromChannel && CHANNEL_ID) {
+    await sendMessage(
+      CHANNEL_ID,
+      '⚠️ I could not read the caption of the last file. Use <code>DEPT | Semester | COURSE | Title</code>, or open the bot (/start) so it can ask you with buttons.'
+    );
+  }
+}
+
+function summary(p) {
+  const l = [`📎 <b>${esc(p.file.name || p.file.kind)}</b>`];
+  if (p.dept) l.push(`🏫 ${esc(p.dept)}`);
+  if (p.semester) l.push(`📅 ${esc(p.semester)}`);
+  if (p.course) l.push(`🎓 ${esc(p.course)}`);
+  return l.join('\n');
+}
+
+// Shows the current step (dept -> semester -> course -> title). Returns false if the message could not be sent.
+async function promptStep(adminId, chatId, p) {
+  const rows = await getFiles();
+  let text;
+  let code = '';
+  let options = [];
+
+  if (p.step === 'dept') {
+    code = 'd';
+    text = 'Select the <b>department</b>:';
+    options = unique([...DEFAULT_DEPTS, ...rows.map((r) => r.dept)]).sort();
+  } else if (p.step === 'semester') {
+    code = 's';
+    text = 'Select the <b>semester</b>:';
+    options = unique([...defaultSemesters(), ...rows.filter((r) => r.dept === p.dept).map((r) => r.semester)]).sort(semSort);
+  } else if (p.step === 'course') {
+    code = 'c';
+    text = 'Select the <b>course</b>:';
+    options = unique(rows.filter((r) => r.dept === p.dept).map((r) => r.course)).sort();
+  } else {
+    text =
+      'Send the <b>title</b> as a message (e.g. <i>Lecture 1</i>)' +
+      (p.titleDefault ? ', or use the suggested one:' : '.');
+  }
+
+  let keyboard;
+  if (p.step === 'title') {
+    p.awaiting = 'title';
+    keyboard = p.titleDefault ? [[btn(`Use: ${short(p.titleDefault, 40)}`, 'u|t|*')]] : [];
+  } else {
+    keyboard = chunk(options.map((o) => btn(o, `u|${code}|${o}`)), 2);
+    keyboard.push([btn('➕ New', `u|${code}|*`)]);
+  }
+  keyboard.push([btn('✖️ Cancel', 'u|x')]);
+
+  const full = `${summary(p)}\n\n${text}`;
+  if (p.prompt_id) {
+    await editMessage(chatId, p.prompt_id, full, kb(keyboard));
+  } else {
+    const m = await sendMessage(chatId, full, kb(keyboard));
+    if (!m) return false;
+    p.prompt_id = m.message_id;
+  }
+  await setPending(adminId, p);
+  return true;
+}
+
+async function onUploadCb(cq, parts) {
+  const [op, ...rest] = parts;
+  const val = rest.join('|');
+  const adminId = cq.from.id;
+  const chatId = cq.message?.chat.id;
+  const msgId = cq.message?.message_id;
+
+  if (!isAdmin(adminId)) return answerCb(cq.id, 'Admins only.', true);
+
+  const p = await getPending(adminId);
+  if (!p || p.prompt_id !== msgId) {
+    return answerCb(cq.id, 'This upload request has expired.', true);
+  }
+  await answerCb(cq.id);
+
+  if (op === 'x') {
+    await clearPending(adminId);
+    return editMessage(chatId, msgId, '✖️ Upload cancelled.');
+  }
+
+  if (op === 't') {
+    p.title = p.titleDefault;
+    return finish(adminId, chatId, p);
+  }
+
+  const field = FIELD[op];
+  if (!field) return;
+
+  if (val === '*') {
+    // "New" -> wait for the admin to type the value
+    p.awaiting = field;
+    await setPending(adminId, p);
+    return editMessage(
+      chatId,
+      msgId,
+      `${summary(p)}\n\n✍️ Type the new <b>${LABEL[field]}</b> and send it:`,
+      kb([[btn('✖️ Cancel', 'u|x')]])
+    );
+  }
+
+  p[field] = NORM[field](val);
+  p.awaiting = null;
+  p.step = NEXT[field];
+  return promptStep(adminId, chatId, p);
+}
+
+async function onPendingText(adminId, chatId, p, text) {
+  const field = p.awaiting;
+  const value = NORM[field](clean(text));
+  if (!value) return;
+
+  p[field] = value;
+  p.awaiting = null;
+  if (field === 'title') return finish(adminId, chatId, p);
+
+  p.step = NEXT[field];
+  return promptStep(adminId, chatId, p);
+}
+
+async function finish(adminId, chatId, p) {
+  const r = await saveFile({
+    dept: p.dept,
+    semester: p.semester,
+    course: p.course,
+    title: p.title,
+    file: p.file,
+    source: p.source,
+  });
+  await clearPending(adminId);
+  return editMessage(chatId, p.prompt_id, r.text);
+}
+
+/* ================= channel mode ================= */
+
+async function onChannelPost(post) {
+  if (!CHANNEL_ID || String(post.chat.id) !== CHANNEL_ID) return;
+  const file = extractFile(post);
+  if (!file) return;
+
+  const adminId = ADMIN_IDS[0]; // results and guided questions go to the first admin by DM
+  if (!adminId) return;
+
+  return handleUpload({
+    file,
+    caption: post.caption || '',
+    adminId,
+    chatId: adminId,
+    source: { chat_id: post.chat.id, message_id: post.message_id },
+    fromChannel: true,
+  });
+}
