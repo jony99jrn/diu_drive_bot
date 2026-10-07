@@ -25,7 +25,9 @@ const HOW_TO = `<b>How to use it</b>
 1️⃣ Choose your department
 2️⃣ Choose the semester (e.g. Summer 2026)
 3️⃣ Choose your course (e.g. CSE 113)
-4️⃣ Tap a file to receive it, or tap “Send all”`;
+4️⃣ Tap a file to receive it, or tap “Send all”
+
+🔎 Can't find a file? Type /report and the file name, e.g. <code>/report CSE 113 Lecture 3</code>`;
 
 const WELCOME = `👋 <b>Welcome to DIU Class Materials!</b>
 
@@ -36,13 +38,14 @@ ${HOW_TO}
 <b>Commands</b>
 /start – open the menu
 /help – how to use the bot
-/about – about the bot`;
+/about – about the bot
+/report – report a missing file`;
 
 const ABOUT = `ℹ️ <b>About DIU Class Materials</b>
 
 A free bot made for students to find lecture slides, PDFs and other course files quickly, without searching through chats and groups.
 
-Materials are added by admins. If your course is missing, check back soon.`;
+Materials are added by admins. If a file is missing, type /report and the file name.`;
 
 const ADMIN_HELP = `🛠 <b>Admin: adding materials</b>
 Send the file to this bot (or post it in the storage channel) with this caption:
@@ -147,12 +150,22 @@ async function onCommand(msg, text) {
   switch (cmd) {
     case '/start':
       return showHome(chatId, null, true);
-    case '/help':
-      return sendMessage(chatId, HOW_TO + (isAdmin(from) ? `\n\n${ADMIN_HELP}` : ''));
+    case '/help': {
+      const rows = await getFiles();
+      const depts = unique(rows.map((r) => r.dept)).sort();
+      const keyboard = chunk(depts.map((d) => btn(`🏫 ${d}`, `S|${d}`)), 2);
+      const helpText =
+        HOW_TO +
+        '\n\n💡 Use /start any time to go back to the menu.' +
+        (isAdmin(from) ? `\n\n${ADMIN_HELP}` : '');
+      return sendMessage(chatId, helpText, kb(keyboard));
+    }
     case '/about':
       return sendMessage(chatId, ABOUT);
     case '/id':
       return sendMessage(chatId, `Your Telegram ID: <code>${from}</code>`);
+    case '/report':
+      return onReport(msg, text);
     case '/batch':
       if (!isAdmin(from)) return;
       return startBatchSelect(from, chatId);
@@ -169,6 +182,37 @@ async function onCommand(msg, text) {
     default:
       return sendMessage(chatId, 'Unknown command. Try /start');
   }
+}
+
+/* ================= /report (missing file) ================= */
+
+async function onReport(msg, text) {
+  const chatId = msg.chat.id;
+  const what = text.replace(/^\/report(@\w+)?\s*/i, '').trim().slice(0, 200);
+
+  if (!what) {
+    return sendMessage(
+      chatId,
+      '✍️ Please write the file name after the command, for example:\n<code>/report CSE 113 Lecture 3</code>'
+    );
+  }
+
+  const u = msg.from || {};
+  const name = [u.first_name, u.last_name].filter(Boolean).join(' ') || 'A student';
+  const who = `<a href="tg://user?id=${u.id}">${esc(name)}</a>` + (u.username ? ` (@${esc(u.username)})` : '');
+
+  let sent = 0;
+  for (const id of ADMIN_IDS) {
+    const m = await sendMessage(id, `📩 <b>Missing file report</b>\n\nFrom: ${who}\nMessage: <b>${esc(what)}</b>`);
+    if (m) sent++;
+  }
+
+  return sendMessage(
+    chatId,
+    sent
+      ? '✅ Thanks! Your report was sent to the admins.'
+      : '⚠️ Sorry, I could not send your report right now. Please try again later.'
+  );
 }
 
 /* ================= student menu ================= */
@@ -225,7 +269,7 @@ async function showFiles(chatId, msgId, dept, sem, course) {
   return render(
     chatId,
     msgId,
-    `🎓 <b>${esc(course)}</b> · ${esc(sem)}\n${list.length} file(s)\n\n👇 Tap a file to receive it:`,
+    `🎓 <b>${esc(course)}</b> · ${esc(sem)}\n${list.length} file(s)\n\n👇 Tap a file to receive it.\n\nCan't find the file you're looking for? Type /report and the file name.`,
     keyboard
   );
 }
