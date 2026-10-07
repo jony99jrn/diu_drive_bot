@@ -1,5 +1,16 @@
 import { sendMessage, editMessage, answerCb, sendFile, copyMessage, esc } from '../lib/telegram.js';
-import { getFiles, addFile, getPending, setPending, clearPending, addPending, listPending } from '../lib/sheets.js';
+import {
+  getFiles,
+  addFile,
+  getPending,
+  setPending,
+  clearPending,
+  addPending,
+  listPending,
+  getReportUsage,
+  addReport,
+  logReport,
+} from '../lib/sheets.js';
 import {
   ADMIN_IDS,
   CHANNEL_ID,
@@ -27,7 +38,7 @@ const HOW_TO = `<b>How to use it</b>
 3️⃣ Choose your course (e.g. CSE 113)
 4️⃣ Tap a file to receive it, or tap “Send all”
 
-🔎 Can't find a file? Type /report and the file name, e.g. <code>/report CSE 113 Lecture 3</code>`;
+🔎 Can't find a file? Report it with /report and your message, e.g. <code>/report your message</code>`;
 
 const WELCOME = `👋 <b>Welcome to DIU Class Materials!</b>
 
@@ -45,7 +56,7 @@ const ABOUT = `ℹ️ <b>About DIU Class Materials</b>
 
 A free bot made for students to find lecture slides, PDFs and other course files quickly, without searching through chats and groups.
 
-Materials are added by admins. If a file is missing, type /report and the file name.`;
+Materials are added by admins. If a file is missing, type /report and your message.`;
 
 const ADMIN_HELP = `🛠 <b>Admin: adding materials</b>
 Send the file to this bot (or post it in the storage channel) with this caption:
@@ -186,30 +197,70 @@ async function onCommand(msg, text) {
 
 /* ================= /report (missing file) ================= */
 
+const REPORT_LIMIT = 3; // reports each student may send ...
+const REPORT_WINDOW_MS = 60 * 60 * 1000; // ... per hour (admins are not limited)
+
 async function onReport(msg, text) {
   const chatId = msg.chat.id;
-  const what = text.replace(/^\/report(@\w+)?\s*/i, '').trim().slice(0, 200);
+  const what = text.replace(/^\/report(@\w+)?\s*/i, '').trim().slice(0, 500);
 
   if (!what) {
     return sendMessage(
       chatId,
-      '✍️ Please write the file name after the command, for example:\n<code>/report CSE 113 Lecture 3</code>'
+      '✍️ Please write your message after the command, for example:\n<code>/report your message</code>'
     );
+  }
+
+  // Rate limit (kept in the "limits" tab). If that tab has a problem, reports still go through.
+  const uid = msg.from?.id;
+  const limited = !isAdmin(uid);
+  if (limited) {
+    try {
+      const usage = await getReportUsage(uid, REPORT_WINDOW_MS);
+      if (usage.count >= REPORT_LIMIT) {
+        const waitMin = Math.max(1, Math.ceil((usage.start + REPORT_WINDOW_MS - Date.now()) / 60000));
+        return sendMessage(
+          chatId,
+          `⏳ You have reached the report limit. Please try again in about ${waitMin} minute(s).`
+        );
+      }
+    } catch (e) {
+      console.error('report limit check failed', e);
+    }
   }
 
   const u = msg.from || {};
   const name = [u.first_name, u.last_name].filter(Boolean).join(' ') || 'A student';
   const who = `<a href="tg://user?id=${u.id}">${esc(name)}</a>` + (u.username ? ` (@${esc(u.username)})` : '');
 
+  // 1) save the report in the "reports" tab
+  let saved = false;
+  try {
+    await logReport({ userId: u.id, name, username: u.username, message: what });
+    saved = true;
+  } catch (e) {
+    console.error('report save failed', e);
+  }
+
+  // 2) notify the admins
   let sent = 0;
   for (const id of ADMIN_IDS) {
-    const m = await sendMessage(id, `📩 <b>Missing file report</b>\n\nFrom: ${who}\nMessage: <b>${esc(what)}</b>`);
+    const m = await sendMessage(id, `📩 <b>New report</b>\n\nFrom: ${who}\nMessage: <b>${esc(what)}</b>`);
     if (m) sent++;
+  }
+
+  const ok = saved || sent > 0;
+  if (ok && limited) {
+    try {
+      await addReport(uid, REPORT_WINDOW_MS);
+    } catch (e) {
+      console.error('report limit save failed', e);
+    }
   }
 
   return sendMessage(
     chatId,
-    sent
+    ok
       ? '✅ Thanks! Your report was sent to the admins.'
       : '⚠️ Sorry, I could not send your report right now. Please try again later.'
   );
@@ -269,7 +320,7 @@ async function showFiles(chatId, msgId, dept, sem, course) {
   return render(
     chatId,
     msgId,
-    `🎓 <b>${esc(course)}</b> · ${esc(sem)}\n${list.length} file(s)\n\n👇 Tap a file to receive it.\n\nCan't find the file you're looking for? Type /report and the file name.`,
+    `🎓 <b>${esc(course)}</b> · ${esc(sem)}\n${list.length} file(s)\n\n👇 Tap a file to receive it.\n\nCan't find the file you're looking for? Type /report and your message.`,
     keyboard
   );
 }
