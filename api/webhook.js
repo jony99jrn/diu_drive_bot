@@ -1,5 +1,5 @@
 import { sendMessage, editMessage, answerCb, sendFile, copyMessage, esc } from '../lib/telegram.js';
-import { getFiles, addFile, getPending, setPending, clearPending } from '../lib/sheets.js';
+import { getFiles, addFile, getPending, setPending, clearPending, addPending, listPending } from '../lib/sheets.js';
 import {
   ADMIN_IDS,
   CHANNEL_ID,
@@ -50,7 +50,13 @@ Send the file to this bot (or post it in the storage channel) with this caption:
 
 No caption, or a wrong one? The bot asks you with buttons.
 Duplicates (same semester, course and title) are skipped.
-/cancel – cancel an unfinished upload`;
+
+📦 <b>Uploading many files at once</b>
+1. Send /batch and choose the department, semester and course.
+2. Send your files (4–5 at a time works well). For each file the bot asks for a title: reply to its message with a title, or tap the suggested file name.
+3. Send /done when you finish.
+
+/cancel – cancel an unfinished upload or batch`;
 
 /* ================= entry point ================= */
 
@@ -103,12 +109,32 @@ async function onMessage(msg) {
       adminId: from,
       chatId,
       source: { chat_id: chatId, message_id: msg.message_id },
+      grouped: Boolean(msg.media_group_id),
     });
   }
 
   if (text && isAdmin(from)) {
+    // 1) a title typed as a reply to a batch question
+    const replyId = msg.reply_to_message?.message_id;
+    if (replyId) {
+      const key = `bf:${from}:${replyId}`;
+      const e = await getPending(key);
+      if (e) return finishBatchFile(chatId, key, e, normTitle(clean(text)));
+    }
+    // 2) a value typed for the button upload (New department, etc.)
     const p = await getPending(from);
     if (p?.awaiting) return onPendingText(from, chatId, p, text);
+    // 3) a title typed without replying
+    const waiting = await listPending(`bf:${from}:`);
+    if (waiting.length === 1) {
+      return finishBatchFile(chatId, waiting[0].key, waiting[0].data, normTitle(clean(text)));
+    }
+    if (waiting.length > 1) {
+      return sendMessage(
+        chatId,
+        `You have ${waiting.length} files waiting for a title. Please <b>reply</b> to the message of the file you mean.`
+      );
+    }
   }
   if (text) return sendMessage(chatId, 'Use /start to browse class materials 📚');
 }
@@ -127,10 +153,19 @@ async function onCommand(msg, text) {
       return sendMessage(chatId, ABOUT);
     case '/id':
       return sendMessage(chatId, `Your Telegram ID: <code>${from}</code>`);
+    case '/batch':
+      if (!isAdmin(from)) return;
+      return startBatchSelect(from, chatId);
+    case '/done':
+      if (!isAdmin(from)) return;
+      await clearPending(`batch:${from}`);
+      return sendMessage(chatId, '✅ Batch mode is off.');
     case '/cancel':
       if (!isAdmin(from)) return;
       await clearPending(from);
-      return sendMessage(chatId, '✖️ Upload cancelled.');
+      await clearPending(`batch:${from}`);
+      for (const w of await listPending(`bf:${from}:`)) await clearPending(w.key);
+      return sendMessage(chatId, '✖️ Cancelled.');
     default:
       return sendMessage(chatId, 'Unknown command. Try /start');
   }
@@ -206,6 +241,7 @@ async function onCallback(cq) {
 
   const [a, ...p] = (cq.data || '').split('|');
   if (a === 'u') return onUploadCb(cq, p);
+  if (a === 'b') return onBatchCb(cq, p);
 
   switch (a) {
     case 'D':
@@ -292,7 +328,7 @@ async function saveFile({ dept, semester, course, title, file, source }) {
   };
 }
 
-async function handleUpload({ file, caption, adminId, chatId, source, fromChannel = false }) {
+async function handleUpload({ file, caption, adminId, chatId, source, fromChannel = false, grouped = false }) {
   file.category = categoryOf(file.name, file.kind);
 
   const parsed = parseCaption(caption);
@@ -300,6 +336,10 @@ async function handleUpload({ file, caption, adminId, chatId, source, fromChanne
     const r = await saveFile({ ...parsed, file, source });
     return sendMessage(chatId, (fromChannel ? '📥 <i>From the channel</i>\n' : '') + r.text);
   }
+
+  // Batch mode: no valid caption -> ask for this file's title (course was chosen with /batch)
+  const ctx = await getPending(`batch:${adminId}`);
+  if (ctx) return askBatchTitle({ ctx, file, caption, grouped, chatId, adminId, source });
 
   // Caption missing or wrong -> ask with buttons
   const p = {
@@ -319,7 +359,7 @@ async function handleUpload({ file, caption, adminId, chatId, source, fromChanne
 }
 
 function summary(p) {
-  const l = [`📎 <b>${esc(p.file.name || p.file.kind)}</b>`];
+  const l = [p.file ? `📎 <b>${esc(p.file.name || p.file.kind)}</b>` : '📦 <b>Batch upload</b>'];
   if (p.dept) l.push(`🏫 ${esc(p.dept)}`);
   if (p.semester) l.push(`📅 ${esc(p.semester)}`);
   if (p.course) l.push(`🎓 ${esc(p.course)}`);
@@ -416,6 +456,7 @@ async function onUploadCb(cq, parts) {
   p[field] = NORM[field](val);
   p.awaiting = null;
   p.step = NEXT[field];
+  if (p.mode === 'batch' && field === 'course') return beginBatch(adminId, chatId, p);
   return promptStep(adminId, chatId, p);
 }
 
@@ -429,6 +470,7 @@ async function onPendingText(adminId, chatId, p, text) {
   if (field === 'title') return finish(adminId, chatId, p);
 
   p.step = NEXT[field];
+  if (p.mode === 'batch' && field === 'course') return beginBatch(adminId, chatId, p);
   return promptStep(adminId, chatId, p);
 }
 
@@ -443,6 +485,88 @@ async function finish(adminId, chatId, p) {
   });
   await clearPending(adminId);
   return editMessage(chatId, p.prompt_id, r.text);
+}
+
+/* ================= batch mode (/batch ... /done) ================= */
+
+async function startBatchSelect(adminId, chatId) {
+  await clearPending(`batch:${adminId}`);
+  const p = { mode: 'batch', step: 'dept', awaiting: null };
+  await promptStep(adminId, chatId, p);
+}
+
+async function beginBatch(adminId, chatId, p) {
+  await setPending(`batch:${adminId}`, { dept: p.dept, semester: p.semester, course: p.course });
+  await clearPending(adminId);
+  return editMessage(
+    chatId,
+    p.prompt_id,
+    `📦 <b>Batch mode is on</b>\n\n🏫 ${esc(p.dept)}\n📅 ${esc(p.semester)}\n🎓 ${esc(p.course)}\n\nNow send your files (4–5 at a time works well). For each file I will ask for a title: reply to my message with a title, or tap the suggested file name.\n\nSend /done when you finish.`
+  );
+}
+
+// One question per file. Each question has its own row in the pending tab,
+// keyed by the question's message id, so files sent together never clash.
+async function askBatchTitle({ ctx, file, caption, grouped, chatId, adminId, source }) {
+  const suggestion =
+    caption && !caption.includes('|') && !grouped ? normTitle(caption) : baseName(file.name);
+
+  const keyboard = [];
+  if (suggestion) keyboard.push([btn(`Use: ${short(suggestion, 40)}`, 'b|t')]);
+  keyboard.push([btn('✖️ Skip this file', 'b|x')]);
+
+  const text =
+    `📎 <b>${esc(file.name || file.kind)}</b>\n` +
+    `🏫 ${esc(ctx.dept)} · 📅 ${esc(ctx.semester)} · 🎓 ${esc(ctx.course)}\n\n` +
+    'Send the <b>title</b> as a <b>reply to this message</b>' +
+    (suggestion ? ', or use the suggested one:' : '.');
+
+  const m = await sendMessage(chatId, text, kb(keyboard));
+  if (!m) return;
+  await addPending(`bf:${adminId}:${m.message_id}`, { ctx, file, source, suggestion });
+}
+
+async function onBatchCb(cq, parts) {
+  const op = parts[0];
+  const adminId = cq.from.id;
+  const chatId = cq.message?.chat.id;
+  const msgId = cq.message?.message_id;
+  if (!isAdmin(adminId)) return answerCb(cq.id, 'Admins only.', true);
+
+  const key = `bf:${adminId}:${msgId}`;
+  const e = await getPending(key);
+  if (!e) return answerCb(cq.id, 'This question has expired.', true);
+  await answerCb(cq.id);
+
+  if (op === 'x') {
+    await clearPending(key);
+    return editMessage(chatId, msgId, '⏭ Skipped.');
+  }
+  return finishBatchFile(chatId, key, e, e.suggestion);
+}
+
+async function finishBatchFile(chatId, key, e, title) {
+  const promptId = Number(key.split(':')[2]);
+  const r = await saveFile({
+    dept: e.ctx.dept,
+    semester: e.ctx.semester,
+    course: e.ctx.course,
+    title,
+    file: e.file,
+    source: e.source,
+  });
+
+  if (!r.ok) {
+    // keep the question open so the admin can send a different title or skip
+    return editMessage(
+      chatId,
+      promptId,
+      `${r.text}\n\nReply with a different title, or skip this file.`,
+      kb([[btn('✖️ Skip this file', 'b|x')]])
+    );
+  }
+  await clearPending(key);
+  return editMessage(chatId, promptId, `✅ <b>${esc(title)}</b> → ${esc(e.ctx.course)} · ${esc(e.ctx.semester)}`);
 }
 
 /* ================= channel mode ================= */
@@ -462,5 +586,6 @@ async function onChannelPost(post) {
     chatId: adminId,
     source: { chat_id: post.chat.id, message_id: post.message_id },
     fromChannel: true,
+    grouped: Boolean(post.media_group_id),
   });
 }
