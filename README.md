@@ -179,6 +179,9 @@ lib/
 package.json     Project info (Node 24)
 vercel.json      Function settings (60 second limit)
 .gitignore       Keeps secrets and node_modules out of GitHub
+CHANGELOG.md     What changed in each version (used for release notes)
+RELEASING.md     Step-by-step guide to updating the bot and releasing
+.github/workflows/release.yml   Creates a GitHub release when the version changes
 ```
 
 ---
@@ -208,11 +211,13 @@ vercel.json      Function settings (60 second limit)
 
 ---
 
-## Updating the bot
+## Updating the bot and releasing a version
 
 1. Edit the file on GitHub (pencil icon), replace its contents, and commit.
-2. Vercel redeploys on its own. Wait for **Ready**.
-3. Raise the `version` in `package.json` when you make a change.
+2. Vercel redeploys on its own. Wait for **Ready**, then test the bot.
+3. To publish a new version: add a section to `CHANGELOG.md`, then change the version in `package.json` **last**. A GitHub release is created automatically.
+
+Full guide with examples: **[RELEASING.md](RELEASING.md)**. Version history: **[CHANGELOG.md](CHANGELOG.md)**.
 
 If something breaks, open the file's **History** on GitHub to restore an older version, or use **Instant Rollback** on an older Vercel deployment.
 
