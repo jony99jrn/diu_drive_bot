@@ -1,0 +1,59 @@
+name: Auto release
+
+# Runs when package.json changes on main (or when you click "Run workflow").
+# It creates a GitHub release named after the version in package.json.
+# Release notes come from the matching "## vX.Y.Z" section in CHANGELOG.md.
+# If that section is missing, GitHub's automatic notes are used instead.
+
+on:
+  push:
+    branches: [main]
+    paths: [package.json]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: v
+        run: echo "version=$(jq -r .version package.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Create release if it does not exist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          TAG="v${VERSION}"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists - nothing to do."
+            exit 0
+          fi
+
+          # Pull the section "## vX.Y.Z ..." out of CHANGELOG.md
+          : > notes.md
+          : > title.txt
+          if [ -f CHANGELOG.md ]; then
+            awk -v tag="## $TAG" '
+              function is_heading(l) { return l == tag || index(l, tag " ") == 1 }
+              is_heading($0) { found = 1; print substr($0, 4) > "title.txt"; next }
+              found && /^## / { exit }
+              found { print > "notes.md" }
+            ' CHANGELOG.md
+          fi
+
+          TITLE="$TAG"
+          if [ -s title.txt ]; then TITLE="$(cat title.txt)"; fi
+
+          if grep -q '[^[:space:]]' notes.md; then
+            gh release create "$TAG" --title "$TITLE" --notes-file notes.md --target "$GITHUB_SHA"
+          else
+            echo "No CHANGELOG section for $TAG - using automatic notes."
+            gh release create "$TAG" --title "$TITLE" --generate-notes --target "$GITHUB_SHA"
+          fi
