@@ -16,6 +16,7 @@ import {
   CHANNEL_ID,
   isAdmin,
   parseCaption,
+  normExam,
   normDept,
   normSemester,
   normCourse,
@@ -36,7 +37,8 @@ const HOW_TO = `<b>How to use it</b>
 1️⃣ Choose your department
 2️⃣ Choose the semester (e.g. Summer 2026)
 3️⃣ Choose your course (e.g. CSE 113)
-4️⃣ Tap a file to receive it, or tap “Send all”
+4️⃣ Choose 📘 Mid, 📗 Final or 📚 All files
+5️⃣ Tap a file to receive it, or tap “Send all”
 
 🔎 Can't find a file? Report it with /report and your message, e.g. <code>/report your message</code>`;
 
@@ -60,13 +62,14 @@ Materials are added by admins. If a file is missing, type /report and your messa
 
 const ADMIN_HELP = `🛠 <b>Admin: adding materials</b>
 Send the file to this bot (or post it in the storage channel) with this caption:
-<code>CSE | Summer 2026 | CSE 113 | Lecture 1</code>
+<code>CSE | Summer 2026 | CSE 113 | Mid | Lecture 1</code>
+Write <b>Mid</b> or <b>Final</b> as the 4th part, or <b>-</b> for material that belongs to the whole course (it shows under All files).
 
-No caption, or a wrong one? The bot asks you with buttons.
-Duplicates (same semester, course and title) are skipped.
+No caption, or a wrong one? The bot asks you with buttons. If you leave out the exam (4 parts), it asks Mid or Final.
+Duplicates (same semester, course, exam and title) are skipped.
 
 📦 <b>Uploading many files at once</b>
-1. Send /batch and choose the department, semester and course.
+1. Send /batch and choose the department, semester, course and exam.
 2. Send your files (4–5 at a time works well). For each file the bot asks for a title: reply to its message with a title, or tap the suggested file name.
 3. Send /done when you finish.
 
@@ -305,27 +308,58 @@ async function showCourses(chatId, msgId, dept, sem) {
   );
 }
 
-async function showFiles(chatId, msgId, dept, sem, course) {
-  const rows = await getFiles();
-  const list = courseFiles(rows, dept, sem, course)
-    .map((f, i) => ({ ...f, i })) // i = position in sheet order (used by the buttons)
-    .sort((a, b) => CAT_ORDER.indexOf(a.category) - CAT_ORDER.indexOf(b.category));
+const EXAM_CODE = { m: 'Mid', f: 'Final' };
+const EXAM_ICON = { Mid: '📘', Final: '📗' };
+// 'a' (or anything unknown) = all files
+const inView = (f, code) => !EXAM_CODE[code] || f.exam === EXAM_CODE[code];
 
-  const keyboard = list
-    .slice(0, 90)
-    .map((f) => [btn(`${CAT_ICON[f.category] || '📁'} ${short(f.title)}`, `G|${dept}|${sem}|${course}|${f.i}`)]);
-  if (list.length > 1) keyboard.push([btn('📥 Send all', `A|${dept}|${sem}|${course}`)]);
-  keyboard.push([btn('⬅️ Back', `C|${dept}|${sem}`)]);
-
+async function showExams(chatId, msgId, dept, sem, course) {
+  const all = courseFiles(await getFiles(), dept, sem, course);
+  const n = (exam) => all.filter((f) => f.exam === exam).length;
+  const base = `${dept}|${sem}|${course}`;
+  const keyboard = [
+    [btn(`📘 Mid (${n('Mid')})`, `X|${base}|m`)],
+    [btn(`📗 Final (${n('Final')})`, `X|${base}|f`)],
+    [btn(`📚 All files (${all.length})`, `X|${base}|a`)],
+    [btn('⬅️ Back', `C|${dept}|${sem}`)],
+  ];
   return render(
     chatId,
     msgId,
-    `🎓 <b>${esc(course)}</b> · ${esc(sem)}\n${list.length} file(s)\n\n👇 Tap a file to receive it.\n\nCan't find the file you're looking for? Type /report and your message.`,
+    `🎓 <b>${esc(course)}</b> · ${esc(sem)}\n\n👇 <b>Select an option</b>`,
     keyboard
   );
 }
 
-const fileCaption = (f) => `🎓 ${esc(f.course)} · ${esc(f.title)}`;
+async function showFiles(chatId, msgId, dept, sem, course, code = 'a') {
+  const rows = await getFiles();
+  const list = courseFiles(rows, dept, sem, course)
+    .map((f, i) => ({ ...f, i })) // i = position in the course's sheet order (used by the buttons)
+    .filter((f) => inView(f, code))
+    .sort((a, b) => CAT_ORDER.indexOf(a.category) - CAT_ORDER.indexOf(b.category));
+
+  const base = `${dept}|${sem}|${course}`;
+  const keyboard = list.slice(0, 90).map((f) => {
+    const tag = !EXAM_CODE[code] && f.exam ? ` · ${f.exam}` : ''; // in All files, show Mid/Final next to the title
+    return [btn(`${CAT_ICON[f.category] || '📁'} ${short(f.title)}${tag}`, `G|${base}|${f.i}`)];
+  });
+  if (list.length > 1) keyboard.push([btn('📥 Send all', `A|${base}|${EXAM_CODE[code] ? code : 'a'}`)]);
+  keyboard.push([btn('⬅️ Back', `F|${base}`)]);
+
+  const heading = EXAM_CODE[code] ? `${EXAM_ICON[EXAM_CODE[code]]} ${EXAM_CODE[code]}` : '📚 All files';
+  const body = list.length
+    ? `${list.length} file(s)\n\n👇 Tap a file to receive it.`
+    : 'No files have been added here yet.';
+
+  return render(
+    chatId,
+    msgId,
+    `🎓 <b>${esc(course)}</b> · ${esc(sem)} · <b>${heading}</b>\n${body}\n\nCan't find the file you're looking for? Type /report and your message.`,
+    keyboard
+  );
+}
+
+const fileCaption = (f) => `🎓 ${esc(f.course)}${f.exam ? ` · ${f.exam}` : ''} · ${esc(f.title)}`;
 
 /* ================= callbacks ================= */
 
@@ -350,7 +384,10 @@ async function onCallback(cq) {
       return showCourses(chatId, msgId, p[0], p[1]);
     case 'F':
       await answerCb(cq.id);
-      return showFiles(chatId, msgId, p[0], p[1], p[2]);
+      return showExams(chatId, msgId, p[0], p[1], p[2]);
+    case 'X':
+      await answerCb(cq.id);
+      return showFiles(chatId, msgId, p[0], p[1], p[2], p[3]);
     case 'G': {
       const [dept, sem, course, i] = p;
       const f = courseFiles(await getFiles(), dept, sem, course)[Number(i)];
@@ -359,8 +396,8 @@ async function onCallback(cq) {
       return sendFile(chatId, f.kind, f.file_id, fileCaption(f));
     }
     case 'A': {
-      const [dept, sem, course] = p;
-      const list = courseFiles(await getFiles(), dept, sem, course);
+      const [dept, sem, course, code = 'a'] = p;
+      const list = courseFiles(await getFiles(), dept, sem, course).filter((f) => inView(f, code));
       await answerCb(cq.id, `Sending ${list.length} file(s)…`);
       for (const f of list) {
         await sendFile(chatId, f.kind, f.file_id, fileCaption(f));
@@ -381,18 +418,19 @@ const defaultSemesters = () => {
   return [`Spring ${y}`, `Summer ${y}`, `Fall ${y}`];
 };
 
-const FIELD = { d: 'dept', s: 'semester', c: 'course' };
-const NORM = { dept: normDept, semester: normSemester, course: normCourse, title: normTitle };
-const LABEL = { dept: 'department', semester: 'semester', course: 'course code', title: 'title' };
-const NEXT = { dept: 'semester', semester: 'course', course: 'title' };
+const FIELD = { d: 'dept', s: 'semester', c: 'course', e: 'exam' };
+const NORM = { dept: normDept, semester: normSemester, course: normCourse, exam: (v) => normExam(v) ?? '', title: normTitle };
+const LABEL = { dept: 'department', semester: 'semester', course: 'course code', exam: 'exam', title: 'title' };
+const NEXT = { dept: 'semester', semester: 'course', course: 'exam', exam: 'title' };
 const clean = (s) => s.replace(/\|/g, '/').slice(0, 60);
 
-// Same dept + semester + course + title (case-insensitive) = duplicate.
-// The semester is included because the same course repeats every semester.
+// Same dept + semester + course + exam + title (case-insensitive) = duplicate.
+// The semester is included because the same course repeats every semester,
+// and the exam is included so "Lecture 1" can exist in both Mid and Final.
 const dupKey = (r) =>
-  [r.dept, r.semester, r.course, r.title].map((x) => x.toLowerCase().trim()).join('|');
+  [r.dept, r.semester, r.course, r.exam || '', r.title].map((x) => String(x).toLowerCase().trim()).join('|');
 
-async function saveFile({ dept, semester, course, title, file, source }) {
+async function saveFile({ dept, semester, course, exam = '', title, file, source }) {
   // callback_data is limited to 64 bytes, so names must stay short
   if (Buffer.byteLength(`G|${dept}|${semester}|${course}|99`) > 64) {
     return {
@@ -402,24 +440,29 @@ async function saveFile({ dept, semester, course, title, file, source }) {
   }
 
   const rows = await getFiles(true);
-  const key = dupKey({ dept, semester, course, title });
+  const key = dupKey({ dept, semester, course, exam, title });
   if (rows.some((r) => dupKey(r) === key)) {
     return {
       ok: false,
-      text: `⚠️ <b>Skipped</b> – “${esc(title)}” already exists in ${esc(course)} (${esc(semester)}).`,
+      text: `⚠️ <b>Skipped</b> – “${esc(title)}” already exists in ${esc(course)} (${esc(semester)}${exam ? `, ${esc(exam)}` : ''}).`,
     };
   }
 
-  await addFile({ dept, semester, course, title, category: file.category, file_id: file.file_id, kind: file.kind });
+  await addFile({ dept, semester, course, exam, title, category: file.category, file_id: file.file_id, kind: file.kind });
 
   // Back up files that did not come from the storage channel
   if (CHANNEL_ID && source && String(source.chat_id) !== CHANNEL_ID) {
-    await copyMessage(CHANNEL_ID, source.chat_id, source.message_id, `${dept} | ${semester} | ${course} | ${title}`);
+    await copyMessage(
+      CHANNEL_ID,
+      source.chat_id,
+      source.message_id,
+      `${dept} | ${semester} | ${course} | ${exam || '-'} | ${title}`
+    );
   }
 
   return {
     ok: true,
-    text: `✅ <b>Saved!</b>\n\n🏫 ${esc(dept)}\n📅 ${esc(semester)}\n🎓 ${esc(course)}\n${CAT_ICON[file.category] || '📁'} ${esc(title)}`,
+    text: `✅ <b>Saved!</b>\n\n🏫 ${esc(dept)}\n📅 ${esc(semester)}\n🎓 ${esc(course)}\n📝 ${esc(exam || 'General')}\n${CAT_ICON[file.category] || '📁'} ${esc(title)}`,
   };
 }
 
@@ -428,8 +471,28 @@ async function handleUpload({ file, caption, adminId, chatId, source, fromChanne
 
   const parsed = parseCaption(caption);
   if (parsed) {
-    const r = await saveFile({ ...parsed, file, source });
-    return sendMessage(chatId, (fromChannel ? '📥 <i>From the channel</i>\n' : '') + r.text);
+    let exam = parsed.exam;
+    if (exam === null) {
+      // 4-part caption (no exam): use the exam chosen with /batch if there is one
+      const bctx = await getPending(`batch:${adminId}`);
+      if (bctx) exam = bctx.exam || '';
+    }
+    if (exam !== null) {
+      const r = await saveFile({ ...parsed, exam, file, source });
+      return sendMessage(chatId, (fromChannel ? '📥 <i>From the channel</i>\n' : '') + r.text);
+    }
+    // Everything is known except the exam -> ask only that
+    const q = {
+      file,
+      source,
+      dept: parsed.dept,
+      semester: parsed.semester,
+      course: parsed.course,
+      title: parsed.title,
+      step: 'exam',
+      awaiting: null,
+    };
+    return promptStep(adminId, chatId, q);
   }
 
   // Batch mode: no valid caption -> ask for this file's title (course was chosen with /batch)
@@ -448,7 +511,7 @@ async function handleUpload({ file, caption, adminId, chatId, source, fromChanne
   if (!ok && fromChannel && CHANNEL_ID) {
     await sendMessage(
       CHANNEL_ID,
-      '⚠️ I could not read the caption of the last file. Use <code>DEPT | Semester | COURSE | Title</code>, or open the bot (/start) so it can ask you with buttons.'
+      '⚠️ I could not read the caption of the last file. Use <code>DEPT | Semester | COURSE | Mid | Title</code>, or open the bot (/start) so it can ask you with buttons.'
     );
   }
 }
@@ -458,10 +521,11 @@ function summary(p) {
   if (p.dept) l.push(`🏫 ${esc(p.dept)}`);
   if (p.semester) l.push(`📅 ${esc(p.semester)}`);
   if (p.course) l.push(`🎓 ${esc(p.course)}`);
+  if (p.exam !== undefined) l.push(`📝 ${esc(p.exam || 'General')}`);
   return l.join('\n');
 }
 
-// Shows the current step (dept -> semester -> course -> title). Returns false if the message could not be sent.
+// Shows the current step (dept -> semester -> course -> exam -> title). Returns false if the message could not be sent.
 async function promptStep(adminId, chatId, p) {
   const rows = await getFiles();
   let text;
@@ -480,6 +544,9 @@ async function promptStep(adminId, chatId, p) {
     code = 'c';
     text = 'Select the <b>course</b>:';
     options = unique(rows.filter((r) => r.dept === p.dept).map((r) => r.course)).sort();
+  } else if (p.step === 'exam') {
+    code = 'e';
+    text = 'Which <b>exam</b> is this for?';
   } else {
     text =
       'Send the <b>title</b> as a message (e.g. <i>Lecture 1</i>)' +
@@ -487,7 +554,12 @@ async function promptStep(adminId, chatId, p) {
   }
 
   let keyboard;
-  if (p.step === 'title') {
+  if (p.step === 'exam') {
+    keyboard = [
+      [btn('📘 Mid', 'u|e|Mid'), btn('📗 Final', 'u|e|Final')],
+      [btn('📚 General (whole course)', 'u|e|-')],
+    ];
+  } else if (p.step === 'title') {
     p.awaiting = 'title';
     keyboard = p.titleDefault ? [[btn(`Use: ${short(p.titleDefault, 40)}`, 'u|t|*')]] : [];
   } else {
@@ -550,8 +622,9 @@ async function onUploadCb(cq, parts) {
 
   p[field] = NORM[field](val);
   p.awaiting = null;
+  if (field === 'exam' && p.title) return finish(adminId, chatId, p); // the caption already had the title
   p.step = NEXT[field];
-  if (p.mode === 'batch' && field === 'course') return beginBatch(adminId, chatId, p);
+  if (p.mode === 'batch' && field === 'exam') return beginBatch(adminId, chatId, p);
   return promptStep(adminId, chatId, p);
 }
 
@@ -565,7 +638,7 @@ async function onPendingText(adminId, chatId, p, text) {
   if (field === 'title') return finish(adminId, chatId, p);
 
   p.step = NEXT[field];
-  if (p.mode === 'batch' && field === 'course') return beginBatch(adminId, chatId, p);
+  if (p.mode === 'batch' && field === 'exam') return beginBatch(adminId, chatId, p);
   return promptStep(adminId, chatId, p);
 }
 
@@ -574,6 +647,7 @@ async function finish(adminId, chatId, p) {
     dept: p.dept,
     semester: p.semester,
     course: p.course,
+    exam: p.exam || '',
     title: p.title,
     file: p.file,
     source: p.source,
@@ -591,12 +665,12 @@ async function startBatchSelect(adminId, chatId) {
 }
 
 async function beginBatch(adminId, chatId, p) {
-  await setPending(`batch:${adminId}`, { dept: p.dept, semester: p.semester, course: p.course });
+  await setPending(`batch:${adminId}`, { dept: p.dept, semester: p.semester, course: p.course, exam: p.exam || '' });
   await clearPending(adminId);
   return editMessage(
     chatId,
     p.prompt_id,
-    `📦 <b>Batch mode is on</b>\n\n🏫 ${esc(p.dept)}\n📅 ${esc(p.semester)}\n🎓 ${esc(p.course)}\n\nNow send your files (4–5 at a time works well). For each file I will ask for a title: reply to my message with a title, or tap the suggested file name.\n\nSend /done when you finish.`
+    `📦 <b>Batch mode is on</b>\n\n🏫 ${esc(p.dept)}\n📅 ${esc(p.semester)}\n🎓 ${esc(p.course)}\n📝 ${esc(p.exam || 'General')}\n\nNow send your files (4–5 at a time works well). For each file I will ask for a title: reply to my message with a title, or tap the suggested file name.\n\nSend /done when you finish.`
   );
 }
 
@@ -612,7 +686,7 @@ async function askBatchTitle({ ctx, file, caption, grouped, chatId, adminId, sou
 
   const text =
     `📎 <b>${esc(file.name || file.kind)}</b>\n` +
-    `🏫 ${esc(ctx.dept)} · 📅 ${esc(ctx.semester)} · 🎓 ${esc(ctx.course)}\n\n` +
+    `🏫 ${esc(ctx.dept)} · 📅 ${esc(ctx.semester)} · 🎓 ${esc(ctx.course)} · 📝 ${esc(ctx.exam || 'General')}\n\n` +
     'Send the <b>title</b> as a <b>reply to this message</b>' +
     (suggestion ? ', or use the suggested one:' : '.');
 
@@ -646,6 +720,7 @@ async function finishBatchFile(chatId, key, e, title) {
     dept: e.ctx.dept,
     semester: e.ctx.semester,
     course: e.ctx.course,
+    exam: e.ctx.exam || '',
     title,
     file: e.file,
     source: e.source,
@@ -661,7 +736,7 @@ async function finishBatchFile(chatId, key, e, title) {
     );
   }
   await clearPending(key);
-  return editMessage(chatId, promptId, `✅ <b>${esc(title)}</b> → ${esc(e.ctx.course)} · ${esc(e.ctx.semester)}`);
+  return editMessage(chatId, promptId, `✅ <b>${esc(title)}</b> → ${esc(e.ctx.course)} · ${esc(e.ctx.semester)} · ${esc(e.ctx.exam || 'General')}`);
 }
 
 /* ================= channel mode ================= */
