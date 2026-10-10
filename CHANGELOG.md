@@ -4,10 +4,16 @@
 How to release a new version:
 1. Update your code files.
 2. Add a new section at the TOP of this list, written exactly like:
-   ## v1.5.1 – Short title
+   ## v1.5.2 – Short title
    - what changed
-3. Change "version" in package.json to the same number (1.5.1). That starts the auto release.
+3. Change "version" in package.json to the same number (1.5.2). That starts the auto release.
 -->
+
+## v1.5.1 – /archive command
+- New admin-only `/archive Fall 2026` moves a finished semester from `files` to `archive`
+- Shows how many files will move and asks you to confirm
+- Copies to the archive first and removes from `files` only after that, so nothing is lost if the copy fails
+- `/archive` alone lists the current semesters as buttons
 
 ## v1.5.0 – Archive tab for previous semesters
 - New `archive` tab (same columns as `files`) for previous semesters
