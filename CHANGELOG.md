@@ -4,10 +4,16 @@
 How to release a new version:
 1. Update your code files.
 2. Add a new section at the TOP of this list, written exactly like:
-   ## v1.5.2 – Short title
+   ## v1.6.1 – Short title
    - what changed
-3. Change "version" in package.json to the same number (1.5.2). That starts the auto release.
+3. Change "version" in package.json to the same number (1.6.1). That starts the auto release.
 -->
+
+## v1.6.0 – "✅ Added" button on reports
+- Each report sent to the admins has a "✅ Added – tell the student" button
+- Tapping it messages the student that the file is now available (with their own report quoted) and ticks the done checkbox in the reports tab
+- Only the first tap tells the student, so two admins never send it twice
+- If the student blocked the bot, the admin sees that it could not be delivered
 
 ## v1.5.1 – /archive command
 - New admin-only `/archive Fall 2026` moves a finished semester from `files` to `archive`
