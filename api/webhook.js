@@ -1,4 +1,4 @@
-import { sendMessage, editMessage, answerCb, sendFile, copyMessage, esc } from '../lib/telegram.js';
+import { tg, sendMessage, editMessage, answerCb, sendFile, copyMessage, esc } from '../lib/telegram.js';
 import {
   getFiles,
   getArchiveDepts,
@@ -13,6 +13,7 @@ import {
   getReportUsage,
   addReport,
   logReport,
+  claimReport,
 } from '../lib/sheets.js';
 import {
   ADMIN_IDS,
@@ -78,6 +79,9 @@ A file with a caption is saved to the <b>current semester</b> (the files tab). F
 1. Send /batch, choose current or previous semester, then the department, semester, course and exam.
 2. Send your files (4–5 at a time works well). For each file the bot asks for a title: reply to its message with a title, or tap the suggested file name.
 3. Send /done when you finish.
+
+📩 <b>Reports</b>
+When a student sends /report, you get it with a ✅ Added button. After you upload the file, tap it and the student is told.
 
 📁 <b>New semester?</b>
 Send /archive Fall 2026 (use your finished semester) to move all its files to Previous semesters. The bot shows how many files will move and asks you to confirm.
@@ -249,17 +253,23 @@ async function onReport(msg, text) {
 
   // 1) save the report in the "reports" tab
   let saved = false;
+  let row = 0; // the row in the reports tab (used by the "✅ Added" button)
   try {
-    await logReport({ userId: u.id, name, username: u.username, message: what });
+    row = (await logReport({ userId: u.id, name, username: u.username, message: what })) || 0;
     saved = true;
   } catch (e) {
     console.error('report save failed', e);
   }
 
-  // 2) notify the admins
+  // 2) notify the admins, each with an "✅ Added" button that tells the student
   let sent = 0;
+  const addedButton = kb([[btn('✅ Added – tell the student', `r|${u.id}|${row}`)]]);
   for (const id of ADMIN_IDS) {
-    const m = await sendMessage(id, `📩 <b>New report</b>\n\nFrom: ${who}\nMessage: <b>${esc(what)}</b>`);
+    const m = await sendMessage(
+      id,
+      `📩 <b>New report</b>\n\nFrom: ${who}\nMessage: <b>${esc(what)}</b>`,
+      addedButton
+    );
     if (m) sent++;
   }
 
@@ -278,6 +288,53 @@ async function onReport(msg, text) {
       ? '✅ Thanks! Your report was sent to the admins.'
       : '⚠️ Sorry, I could not send your report right now. Please try again later.'
   );
+}
+
+/* ===== "✅ Added" button under a report (admin): tells the student and ticks the checkbox ===== */
+
+// Replaces the button under the report with a button that only shows the result
+const setReportButton = (chatId, msgId, label) =>
+  tg('editMessageReplyMarkup', {
+    chat_id: chatId,
+    message_id: msgId,
+    reply_markup: { inline_keyboard: [[btn(label, 'r|x')]] },
+  });
+
+async function onReportCb(cq, parts) {
+  const chatId = cq.message?.chat.id;
+  const msgId = cq.message?.message_id;
+  if (!isAdmin(cq.from.id)) return answerCb(cq.id, 'Admins only.', true);
+
+  const [studentId, rowText] = parts;
+  if (studentId === 'x') return answerCb(cq.id, 'This report is already handled.'); // the result button
+  const row = Number(rowText) || 0;
+  if (!studentId) return answerCb(cq.id);
+
+  // 1) tick the checkbox once (so two admins never tell the student twice)
+  let message = '';
+  if (row > 0) {
+    const c = await claimReport(row, studentId);
+    if (c.status === 'done') {
+      await setReportButton(chatId, msgId, '✔️ Already handled');
+      return answerCb(cq.id, 'Already handled. The student was told before.');
+    }
+    message = c.message;
+  }
+
+  // 2) tell the student
+  const sent = await sendMessage(
+    studentId,
+    '✅ <b>Good news!</b> The file you reported is now available.' +
+      (message ? `\n\nYour report: <i>${esc(message)}</i>` : '') +
+      '\n\nUse /start to open the menu. Thank you for helping! 🙏'
+  );
+
+  if (sent) {
+    await setReportButton(chatId, msgId, '✅ Student told');
+    return answerCb(cq.id, 'The student has been told.');
+  }
+  await setReportButton(chatId, msgId, '⚠️ Could not message the student');
+  return answerCb(cq.id, 'Could not message the student (they may have blocked the bot).', true);
 }
 
 /* ================= student menu ================= */
@@ -400,6 +457,7 @@ async function onCallback(cq) {
   if (raw === 'u') return onUploadCb(cq, p);
   if (raw === 'b') return onBatchCb(cq, p);
   if (raw === 'm') return onArchiveCb(cq, p);
+  if (raw === 'r') return onReportCb(cq, p);
 
   // "C~" = the same button, but for the archive tab (previous semesters)
   const arch = raw.endsWith('~');
