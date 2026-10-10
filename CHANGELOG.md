@@ -4,10 +4,17 @@
 How to release a new version:
 1. Update your code files.
 2. Add a new section at the TOP of this list, written exactly like:
-   ## v1.5.0 – Short title
+   ## v1.5.1 – Short title
    - what changed
-3. Change "version" in package.json to the same number (1.5.0). That starts the auto release.
+3. Change "version" in package.json to the same number (1.5.1). That starts the auto release.
 -->
+
+## v1.5.0 – Archive tab for previous semesters
+- New `archive` tab (same columns as `files`) for previous semesters
+- Semester menu shows a "📁 Previous semesters" button; the archive is read only when it is opened
+- Uploads ask "Current or previous semester?" (buttons and `/batch`); captions save to the current semester
+- Duplicate check looks in the tab the file is saved to
+- Home menu also lists departments that only have old files
 
 ## v1.4.0 – Mid / Final / All files
 - After choosing a course, students pick Mid, Final or All files
