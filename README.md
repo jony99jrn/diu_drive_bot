@@ -6,7 +6,7 @@ Students browse with buttons: **Department → Semester → Course → Mid / Fin
 Old semesters sit behind a **📁 Previous semesters** button.
 Admins upload by sending files to the bot (or posting them in a private storage channel).
 
-Version: **1.5.0**
+Version: **1.5.1**
 
 ---
 
@@ -51,9 +51,10 @@ Telegram ⇄ Vercel (api/webhook.js) ⇄ Google Sheets (index)
 | `/id` | everyone | Shows your own Telegram ID |
 | `/batch` | admins | Upload several files into one course and exam |
 | `/done` | admins | Turn batch mode off |
+| `/archive Fall 2026` | admins | Move a finished semester to Previous semesters (asks you to confirm first) |
 | `/cancel` | admins | Cancel an unfinished upload or batch |
 
-Menu commands to set in @BotFather (`/setcommands`):
+Menu commands to set in @BotFather (`/setcommands`). Admin commands (`/batch`, `/done`, `/cancel`, `/archive`) are not listed there, so students do not see them:
 
 ```
 start - Open the menu
@@ -112,7 +113,7 @@ Column `I` holds `Mid` or `Final`. A blank value means the file shows only under
 This tab is the **current semester**. Keep it small.
 
 **`archive`** – **previous semesters**. Exactly the same 9 columns and headers as `files`.
-The bot reads this tab only when a student opens **📁 Previous semesters**. To archive a semester, cut its rows from `files` and paste them into `archive` (keep the column order).
+The bot reads this tab only when a student opens **📁 Previous semesters**. When a semester ends, send `/archive Fall 2026` to the bot (admins only). It shows how many files will move, asks you to confirm, copies them to `archive`, and then removes them from `files`. You can also do it by hand: cut the rows from `files` and paste them into `archive` (keep the column order).
 
 **`pending`** – temporary notebook used while uploading
 
