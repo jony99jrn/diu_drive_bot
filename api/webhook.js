@@ -8,6 +8,8 @@ import {
   clearPending,
   addPending,
   listPending,
+  countSemester,
+  moveSemesterToArchive,
   getReportUsage,
   addReport,
   logReport,
@@ -76,6 +78,9 @@ A file with a caption is saved to the <b>current semester</b> (the files tab). F
 1. Send /batch, choose current or previous semester, then the department, semester, course and exam.
 2. Send your files (4–5 at a time works well). For each file the bot asks for a title: reply to its message with a title, or tap the suggested file name.
 3. Send /done when you finish.
+
+📁 <b>New semester?</b>
+Send /archive Fall 2026 (use your finished semester) to move all its files to Previous semesters. The bot shows how many files will move and asks you to confirm.
 
 /cancel – cancel an unfinished upload or batch`;
 
@@ -186,6 +191,9 @@ async function onCommand(msg, text) {
     case '/batch':
       if (!isAdmin(from)) return;
       return startBatchSelect(from, chatId);
+    case '/archive':
+      if (!isAdmin(from)) return; // admins only (silent for everyone else, like /batch)
+      return onArchiveCommand(chatId, text);
     case '/done':
       if (!isAdmin(from)) return;
       await clearPending(`batch:${from}`);
@@ -391,6 +399,7 @@ async function onCallback(cq) {
   const [raw, ...p] = (cq.data || '').split('|');
   if (raw === 'u') return onUploadCb(cq, p);
   if (raw === 'b') return onBatchCb(cq, p);
+  if (raw === 'm') return onArchiveCb(cq, p);
 
   // "C~" = the same button, but for the archive tab (previous semesters)
   const arch = raw.endsWith('~');
@@ -785,6 +794,84 @@ async function finishBatchFile(chatId, key, e, title) {
   }
   await clearPending(key);
   return editMessage(chatId, promptId, `✅ <b>${esc(title)}</b> → ${esc(e.ctx.course)} · ${esc(e.ctx.semester)} · ${esc(e.ctx.exam || 'General')}`);
+}
+
+/* ================= /archive (admin): move a finished semester to Previous semesters ================= */
+
+const archiving = new Set(); // stops a double tap from moving the same semester twice
+
+async function onArchiveCommand(chatId, text) {
+  const sem = normSemester(clean(text.replace(/^\/archive(@\w+)?\s*/i, '')).slice(0, 50));
+  if (sem) return askArchive(chatId, null, sem);
+
+  // no semester typed -> offer the ones that are in the current list
+  const rows = await getFiles(true);
+  const sems = unique(rows.map((r) => r.semester))
+    .filter((s) => Buffer.byteLength(`m|y|${s}`) <= 64)
+    .sort(semSort);
+  if (!sems.length) return sendMessage(chatId, '📭 There are no files in the current semester list.');
+  const keyboard = chunk(sems.map((s) => btn(`📅 ${s}`, `m|p|${s}`)), 2);
+  keyboard.push([btn('✖️ Cancel', 'm|x')]);
+  return sendMessage(
+    chatId,
+    'Which semester do you want to move to <b>Previous semesters</b>?\n\nYou can also type it, e.g. <code>/archive Fall 2026</code>',
+    kb(keyboard)
+  );
+}
+
+// Shows what will move and asks for a confirmation (nothing is changed yet)
+async function askArchive(chatId, msgId, sem) {
+  const { total, byDept } = await countSemester(sem);
+  if (!total) {
+    return render(chatId, msgId, `📭 No files found for <b>${esc(sem)}</b> in the current semester list.`, []);
+  }
+  const lines = Object.entries(byDept).map(([d, n]) => `• ${esc(d)}: ${n}`).join('\n');
+  return render(
+    chatId,
+    msgId,
+    `📦 <b>Move ${esc(sem)} to Previous semesters?</b>\n\n${total} file(s):\n${lines}\n\nThey are copied to the archive tab and then removed from the files tab (current semester).`,
+    [[btn(`✅ Yes, move ${total} file(s)`, `m|y|${sem}`)], [btn('✖️ Cancel', 'm|x')]]
+  );
+}
+
+async function onArchiveCb(cq, parts) {
+  const chatId = cq.message?.chat.id;
+  const msgId = cq.message?.message_id;
+  if (!isAdmin(cq.from.id)) return answerCb(cq.id, 'Admins only.', true);
+
+  const op = parts[0];
+  const sem = parts.slice(1).join('|');
+  await answerCb(cq.id);
+
+  if (op === 'x') return editMessage(chatId, msgId, '✖️ Cancelled. Nothing was moved.');
+  if (op === 'p') return askArchive(chatId, msgId, sem);
+  if (op !== 'y' || !sem) return;
+
+  const key = sem.toLowerCase();
+  if (archiving.has(key)) return;
+  archiving.add(key);
+  try {
+    await editMessage(chatId, msgId, `⏳ Moving <b>${esc(sem)}</b>…`);
+    const n = await moveSemesterToArchive(sem);
+    return editMessage(
+      chatId,
+      msgId,
+      n
+        ? `✅ <b>Done!</b> Moved ${n} file(s) of <b>${esc(sem)}</b> to Previous semesters.\n\nThe menu updates within a minute.`
+        : `📭 No files found for <b>${esc(sem)}</b>. Maybe they were already moved.`
+    );
+  } catch (e) {
+    console.error('archive move failed', e);
+    return editMessage(
+      chatId,
+      msgId,
+      e.copied
+        ? `⚠️ The ${e.copied} file(s) were copied to the archive tab, but I could not remove them from the files tab.\n\nDelete the <b>${esc(sem)}</b> rows from the files tab by hand. Do <b>not</b> run /archive again, or they will be copied twice.`
+        : '❌ Could not move the files. Nothing was removed.\n\nCheck that the <b>archive</b> tab exists and has the same headers as the files tab.'
+    );
+  } finally {
+    archiving.delete(key);
+  }
 }
 
 /* ================= channel mode ================= */
