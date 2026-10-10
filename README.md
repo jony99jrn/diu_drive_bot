@@ -3,9 +3,10 @@
 Telegram bot **@diu_drive_bot** that keeps lecture slides, PDFs and other class materials in one place, organised by department, semester, course and exam (Mid / Final).
 
 Students browse with buttons: **Department → Semester → Course → Mid / Final / All files → file**.
+Old semesters sit behind a **📁 Previous semesters** button.
 Admins upload by sending files to the bot (or posting them in a private storage channel).
 
-Version: **1.4.0**
+Version: **1.5.0**
 
 ---
 
@@ -26,6 +27,7 @@ Telegram ⇄ Vercel (api/webhook.js) ⇄ Google Sheets (index)
 
 **For students**
 - Menu: department → semester → course → **📘 Mid / 📗 Final / 📚 All files** → file
+- **📁 Previous semesters** button for old semesters (kept in a separate tab so the bot stays fast)
 - **Send all** for the list being viewed
 - `/report your message` to report a missing file (limited to 3 reports per hour)
 
@@ -75,12 +77,14 @@ CSE | Summer 2026 | CSE 113 | Mid | Lecture 1
 Parts: `department | semester | course | exam | title`.
 Exam is `Mid`, `Final`, or `-` for material that belongs to the whole course (shown under All files only).
 A 4-part caption without the exam still works. The bot then asks Mid or Final with buttons.
+A file with a caption is always saved as the **current semester** (the `files` tab).
 
 **2. One file without a caption**
-Send the file and follow the buttons: department → semester → course → exam → title. Use **➕ New** to type a value that is not listed. For the title, tap the suggested file name or type your own.
+Send the file and follow the buttons: **current or previous semester** → department → semester → course → exam → title. Use **➕ New** to type a value that is not listed. For the title, tap the suggested file name or type your own.
+Choosing **Previous semester** saves the file in the `archive` tab.
 
 **3. Several files (`/batch`)**
-1. Send `/batch` in the chat with the bot and choose department, semester, course and exam once.
+1. Send `/batch` in the chat with the bot and choose current or previous semester, then department, semester, course and exam once. (While batch mode is on, files with captions follow that same choice.)
 2. Send your files (4 to 5 at a time works well).
 3. For each file the bot asks for a title: tap **Use: file name**, or reply to its question with your own title.
 4. Send `/done` when finished.
@@ -105,6 +109,10 @@ Create these tabs with these exact names and header rows.
 | dept | semester | course | title | type | file_id | added_on | kind | exam |
 
 Column `I` holds `Mid` or `Final`. A blank value means the file shows only under All files.
+This tab is the **current semester**. Keep it small.
+
+**`archive`** – **previous semesters**. Exactly the same 9 columns and headers as `files`.
+The bot reads this tab only when a student opens **📁 Previous semesters**. To archive a semester, cut its rows from `files` and paste them into `archive` (keep the column order).
 
 **`pending`** – temporary notebook used while uploading
 
@@ -173,7 +181,7 @@ Opening `https://YOUR-PROJECT.vercel.app/api/webhook` in a browser should show "
 api/
   webhook.js     Main bot logic: menus, uploads, /batch, /report, channel mode
 lib/
-  sheets.js      Google Sheets access (files, pending, limits, reports) and caching
+  sheets.js      Google Sheets access (files, archive, pending, limits, reports) and caching
   telegram.js    Telegram API helpers
   util.js        Caption parsing, name cleaning, file type detection, sorting
 package.json     Project info (Node 24)
@@ -191,7 +199,7 @@ RELEASING.md     Step-by-step guide to updating the bot and releasing
 - **Telegram:** about 1 message per second to one chat. "Send all" waits 0.4 seconds between files.
 - **Buttons:** each button's hidden data is limited to 64 bytes, so keep names short (e.g. `CSE`, `Summer 2026`, `CSE 113`).
 - **Menu size:** a list shows at most 90 file buttons.
-- **Google Sheets:** about 60 reads per minute per service account. The bot caches the Sheet for 60 seconds, so changes in the Sheet can take up to a minute to appear.
+- **Google Sheets:** about 60 reads per minute per service account. The bot caches each tab for 60 seconds, so changes in the Sheet can take up to a minute to appear.
 - **Vercel Hobby plan:** for personal, non-commercial use, with a monthly limit on function calls that is plenty for a class-sized bot.
 - **Bulk uploads:** upload roughly 10 files per minute in `/batch` mode, and re-send any that fail. The duplicate check makes re-sending safe.
 
@@ -205,6 +213,7 @@ RELEASING.md     Step-by-step guide to updating the bot and releasing
 | Log says `Unexpected end of input` | A file on GitHub was cut off when pasting. Re-upload it and compare line counts |
 | Build fails on Node version | `package.json` must say `"node": "24.x"` |
 | `/start` works but uploads fail | Sheet shared with the service account as Editor? Tab names exact? |
+| No **Previous semesters** button | Does the `archive` tab exist, with the same headers as `files`, and does it have rows for that department? |
 | Webhook error 401 | `WEBHOOK_SECRET` must match the `secret_token` in the `setWebhook` link |
 | Files not copied to the channel | `CHANNEL_ID` correct and bot is a channel admin? Look for `copyMessage failed` in the logs |
 | Menu button shows few commands | Send all command lines to @BotFather in one message |
