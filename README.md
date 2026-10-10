@@ -6,7 +6,7 @@ Students browse with buttons: **Department → Semester → Course → Mid / Fin
 Old semesters sit behind a **📁 Previous semesters** button.
 Admins upload by sending files to the bot (or posting them in a private storage channel).
 
-Version: **1.5.1**
+Version: **1.6.0**
 
 ---
 
@@ -36,6 +36,7 @@ Telegram ⇄ Vercel (api/webhook.js) ⇄ Google Sheets (index)
 - Channel mode: post files in the private channel with a caption
 - Duplicate check (same semester, course, exam and title is skipped)
 - Reports saved in a Sheet tab, with a "done" checkbox
+- Each report has a **✅ Added – tell the student** button: one tap messages the student that the file is available and ticks the checkbox
 - All times in Bangladesh time (GMT+6)
 
 ---
