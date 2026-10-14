@@ -82,6 +82,7 @@ A file with a caption is saved to the <b>current semester</b> (the files tab). F
 
 📩 <b>Reports</b>
 When a student sends /report, you get it with a ✅ Added button. After you upload the file, tap it and the student is told.
+Want to write your own message instead? <b>Reply</b> to the report message with text, a photo, a video or a voice note, and the student receives it. A reply does not tick the done box, so you can still tap ✅ Added later.
 
 📁 <b>New semester?</b>
 Send /archive Fall 2026 (use your finished semester) to move all its files to Previous semesters. The bot shows how many files will move and asks you to confirm.
@@ -129,6 +130,10 @@ async function onMessage(msg) {
   const text = (msg.text || '').trim();
 
   if (text.startsWith('/')) return onCommand(msg, text);
+
+  // An admin replying to a "📩 New report" message: send the reply to that student.
+  // This runs before the upload checks, so a photo or video reply is not saved as a class file.
+  if (isAdmin(from) && msg.reply_to_message && (await onReportReply(msg, text))) return;
 
   const file = extractFile(msg);
   if (file) {
@@ -267,7 +272,7 @@ async function onReport(msg, text) {
   for (const id of ADMIN_IDS) {
     const m = await sendMessage(
       id,
-      `📩 <b>New report</b>\n\nFrom: ${who}\nMessage: <b>${esc(what)}</b>`,
+      `📩 <b>New report</b>\n\nFrom: ${who}\nMessage: <b>${esc(what)}</b>\n\n<code>Report #${row} · ID ${u.id}</code>\n<i>Reply to this message to answer the student.</i>`,
       addedButton
     );
     if (m) sent++;
@@ -335,6 +340,62 @@ async function onReportCb(cq, parts) {
   }
   await setReportButton(chatId, msgId, '⚠️ Could not message the student');
   return answerCb(cq.id, 'Could not message the student (they may have blocked the bot).', true);
+}
+
+/* ===== Admin replies to a report with their own message (text, photo, video, voice, ...) ===== */
+
+// The report message carries a line like "Report #12 · ID 123456789" (that is how we know the student).
+const REPORT_TAG = /Report #(\d+) · ID (\d+)/;
+const ADMIN_HEAD = '💬 <b>Message from the admin</b>';
+
+// Returns true if the message was a reply to a report (and has been handled), false otherwise.
+async function onReportReply(msg, text) {
+  const orig = msg.reply_to_message;
+  const tag = REPORT_TAG.exec(orig?.text || '');
+  if (!orig?.from?.is_bot || !(orig.text || '').includes('New report') || !tag) return false;
+
+  const chatId = msg.chat.id;
+  const studentId = tag[2];
+  const reported = /Message: ([\s\S]*?)\n\nReport #/.exec(orig.text)?.[1] || '';
+
+  let sent;
+  if (msg.text) {
+    // plain text reply
+    sent = await sendMessage(
+      studentId,
+      `${ADMIN_HEAD}\n\n${esc(text.slice(0, 3500))}` +
+        (reported ? `\n\n<i>Your report: ${esc(reported)}</i>` : '')
+    );
+  } else {
+    // photo, video, voice, document, sticker ... copied as it is, nothing is downloaded.
+    // Album items share one reply: only an item with a caption (or a single file) gets the heading.
+    const own = (msg.caption || '').trim().slice(0, 900);
+    let caption;
+    if (own) caption = `${ADMIN_HEAD}\n\n${esc(own)}`;
+    else if (!msg.media_group_id) caption = ADMIN_HEAD;
+    sent = await tg('copyMessage', {
+      chat_id: studentId,
+      from_chat_id: chatId,
+      message_id: msg.message_id,
+      ...(caption ? { caption, parse_mode: 'HTML' } : {}),
+    });
+  }
+
+  if (sent) {
+    // a quiet 👍 on the admin's own message (falls back to a short note if reactions fail)
+    const r = await tg('setMessageReaction', {
+      chat_id: chatId,
+      message_id: msg.message_id,
+      reaction: [{ type: 'emoji', emoji: '👍' }],
+    });
+    if (!r) await sendMessage(chatId, '📨 Sent to the student.');
+  } else {
+    await sendMessage(
+      chatId,
+      '⚠️ Could not message the student (they may have blocked the bot). Nothing was sent.'
+    );
+  }
+  return true;
 }
 
 /* ================= student menu ================= */
