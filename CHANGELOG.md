@@ -9,6 +9,14 @@ How to release a new version:
 3. Change "version" in package.json to the same number (1.6.1). That starts the auto release.
 -->
 
+## v1.7.0 – Reply to a report
+- Admins can reply to a "📩 New report" message with their own text, photo, video, voice note or file, and the student receives it
+- Works with many reports at once: each reply goes to the student of the report you replied to
+- Works in `/batch` mode too, and a media reply is never saved as a class file
+- A reply does not tick the done checkbox; the "✅ Added" button still works as before
+- Each report now shows a `Report #row · ID` line (used to find the student)
+- If the student blocked the bot, the admin is told that nothing was sent
+
 ## v1.6.0 – "✅ Added" button on reports
 - Each report sent to the admins has a "✅ Added – tell the student" button
 - Tapping it messages the student that the file is now available (with their own report quoted) and ticks the done checkbox in the reports tab
