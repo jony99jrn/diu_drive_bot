@@ -6,7 +6,7 @@ Students browse with buttons: **Department → Semester → Course → Mid / Fin
 Old semesters sit behind a **📁 Previous semesters** button.
 Admins upload by sending files to the bot (or posting them in a private storage channel).
 
-Version: **1.7.0**
+Version: **1.8.0**
 
 ---
 
@@ -128,6 +128,14 @@ The bot reads this tab only when a student opens **📁 Previous semesters**. Wh
 | A | B | C |
 |---|---|---|
 | user_id | count | window_start |
+
+**`stats`** – usage counters (the bot keeps these up to date)
+
+| A | B |
+|---|---|
+| name | count |
+
+`opens` goes up each time a student sends `/start`. `files_sent` goes up for each file a student receives (**Send all** adds one per file). Admins are not counted. Each counter row is created automatically the first time it is used, so you only need the tab and the header row.
 
 **`reports`** – log of every `/report`
 
