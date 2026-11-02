@@ -9,6 +9,12 @@ How to release a new version:
 3. Change "version" in package.json to the same number (1.6.1). That starts the auto release.
 -->
 
+## v1.8.0 – Usage counter
+- New `stats` tab in the Google Sheet with usage counters
+- `opens` goes up each time a student sends `/start`
+- `files_sent` goes up for each file a student receives (Send all adds one per file)
+- Admins are not counted, and a counting problem never stops the bot from working
+
 ## v1.7.0 – Reply to a report
 - Admins can reply to a "📩 New report" message with their own text, photo, video, voice note or file, and the student receives it
 - Works with many reports at once: each reply goes to the student of the report you replied to
