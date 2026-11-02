@@ -14,6 +14,7 @@ import {
   addReport,
   logReport,
   claimReport,
+  bumpCounter,
 } from '../lib/sheets.js';
 import {
   ADMIN_IDS,
@@ -117,6 +118,11 @@ const kb = (rows) => ({ reply_markup: { inline_keyboard: rows } });
 const short = (s, n = 45) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Usage counters (the "stats" tab). Admins are not counted, and a counting problem never breaks the bot.
+// Start it early and `await` it at the end, so it runs while the bot does its normal work.
+const track = (userId, name, by = 1) =>
+  isAdmin(userId) ? Promise.resolve() : bumpCounter(name, by).catch((e) => console.error('counter failed', e));
+
 function render(chatId, msgId, text, keyboard) {
   const extra = kb(keyboard);
   return msgId ? editMessage(chatId, msgId, text, extra) : sendMessage(chatId, text, extra);
@@ -180,8 +186,11 @@ async function onCommand(msg, text) {
   const cmd = text.split(/[\s@]/)[0].toLowerCase();
 
   switch (cmd) {
-    case '/start':
-      return showHome(chatId, null, true);
+    case '/start': {
+      const counted = track(from, 'opens');
+      await showHome(chatId, null, true);
+      return counted;
+    }
     case '/help': {
       const depts = await allDepts();
       const keyboard = chunk(depts.map((d) => btn(`🏫 ${d}`, `S|${d}`)), 2);
@@ -545,17 +554,20 @@ async function onCallback(cq) {
       const f = courseFiles(await getFiles(false, arch), dept, sem, course)[Number(i)];
       if (!f) return answerCb(cq.id, 'File not found. Please reopen the menu.', true);
       await answerCb(cq.id);
-      return sendFile(chatId, f.kind, f.file_id, fileCaption(f));
+      const counted = track(cq.from.id, 'files_sent');
+      await sendFile(chatId, f.kind, f.file_id, fileCaption(f));
+      return counted;
     }
     case 'A': {
       const [dept, sem, course, code = 'a'] = p;
       const list = courseFiles(await getFiles(false, arch), dept, sem, course).filter((f) => inView(f, code));
       await answerCb(cq.id, `Sending ${list.length} file(s)…`);
+      const counted = list.length ? track(cq.from.id, 'files_sent', list.length) : Promise.resolve();
       for (const f of list) {
         await sendFile(chatId, f.kind, f.file_id, fileCaption(f));
         await sleep(400); // stay under Telegram's rate limit
       }
-      return;
+      return counted;
     }
     default:
       return answerCb(cq.id);
